@@ -13,14 +13,14 @@ cli = Cliqr.interface do
   description ''
   version '0.0.1'
 
-  option :graphite_host do
+  option :influxdb_host do
     description ''
     default 'localhost'
   end
 
   handler do
     node_local_stats = JSON.parse(Excon.get('http://localhost:9200/_nodes/_local/stats').body)
-    client = InfluxDB::LineProtocolWriter::Core.new host: graphite_host.to_s,
+    client = InfluxDB::LineProtocolWriter::Core.new host: influxdb_host,
                                                       db: 'graphite',
                                                     user: 'admin',
                                                     pass: 'admin'
