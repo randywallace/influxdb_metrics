@@ -1,0 +1,7 @@
+source 'https://rubygems.org'
+
+gem 'influxdb-lineprotocol-writer'
+gem 'json'
+gem 'jmespath'
+gem 'cliqr'
+gem 'io-console'

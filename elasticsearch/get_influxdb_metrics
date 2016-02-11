@@ -1,0 +1,117 @@
+#!/usr/bin/env ruby
+
+require 'influxdb-lineprotocol-writer'
+require 'json'
+require 'uri'
+require 'net/http'
+require 'jmespath'
+require 'excon'
+require 'cliqr'
+
+cli = Cliqr.interface do
+  name 'get_elasticsearch_metrics'
+  description ''
+  version '0.0.1'
+
+  option :graphite_host do
+    description ''
+    default 'localhost'
+  end
+
+  handler do
+    node_local_stats = JSON.parse(Excon.get('http://localhost:9200/_nodes/_local/stats').body)
+    client = InfluxDB::LineProtocolWriter::Core.new host: graphite_host.to_s,
+                                                      db: 'graphite',
+                                                    user: 'admin',
+                                                    pass: 'admin'
+    client.connect
+    metric_base = 'elasticsearch'
+    host = JMESPath.search('nodes.*.host', node_local_stats)[0]
+    global_timestamp = JMESPath.search('nodes.*.timestamp', node_local_stats)[0]
+    attributes = JMESPath.search('nodes.*.attributes', node_local_stats)[0].inject({}){|memo,(k,v)| memo[k.to_sym] = v; memo}
+    global_tags  = attributes.merge({host: host})
+    JMESPath.search('nodes.*.indices', node_local_stats)[0].each do |k|
+      client.add_metric metric_base + '.indices.' + k[0], global_tags, k[1], 'ms', global_timestamp
+    end
+    JMESPath.search('nodes.*.os', node_local_stats).each do |k|
+      timestamp = k["timestamp"]
+      client.add_metric metric_base + '.os.uptime_in_millis', global_tags, {value: k["uptime_in_millis"]}, 'ms', timestamp
+      client.add_metric metric_base + '.os.load_average', global_tags.merge({ period: "one_minute"     }), {value: k["load_average"][0]}, 'ms', timestamp
+      client.add_metric metric_base + '.os.load_average', global_tags.merge({ period: "five_minute"    }), {value: k["load_average"][1]}, 'ms', timestamp
+      client.add_metric metric_base + '.os.load_average', global_tags.merge({ period: "fifteen_minute" }), {value: k["load_average"][2]}, 'ms', timestamp
+      k["cpu"].each do |l, v|
+        client.add_metric metric_base + '.os.cpu', global_tags.merge({ type: l }), {value: v}, 'ms', timestamp
+      end
+      k["mem"].each do |l, v|
+        client.add_metric metric_base + '.os.memory', global_tags.merge({ type: l }), {value: v}, 'ms', timestamp
+      end
+      k["swap"].each do |l, v|
+        client.add_metric metric_base + '.os.swap', global_tags.merge({ type: l }), {value: v}, 'ms', timestamp
+      end
+    end
+    JMESPath.search('nodes.*.process', node_local_stats).each do |k|
+      timestamp = k["timestamp"]
+      client.add_metric metric_base + '.process.open_file_descriptors', global_tags, {value: k["open_file_descriptors"]}, 'ms', timestamp
+      k["cpu"].each do |l, v|
+        client.add_metric metric_base + '.process.cpu', global_tags.merge({ type: l }), {value: v}, 'ms', timestamp
+      end
+      k["mem"].each do |l, v|
+        client.add_metric metric_base + '.process.memory', global_tags.merge({ type: l }), {value: v}, 'ms', timestamp
+      end
+    end
+    JMESPath.search('nodes.*.jvm', node_local_stats).each do |k|
+      timestamp = k["timestamp"]
+      client.add_metric metric_base + '.jvm.uptime_in_millis',                   global_tags, {value: k["uptime_in_millis"]}, 'ms', timestamp
+      client.add_metric metric_base + '.jvm.memory.heap_used_in_bytes',          global_tags, {value: k["mem"]["heap_used_in_bytes"]}, 'ms', timestamp
+      client.add_metric metric_base + '.jvm.memory.heap_used_percent',           global_tags, {value: k["mem"]["heap_used_percent"]}, 'ms', timestamp
+      client.add_metric metric_base + '.jvm.memory.heap_committed_in_bytes',     global_tags, {value: k["mem"]["heap_committed_in_bytes"]}, 'ms', timestamp
+      client.add_metric metric_base + '.jvm.memory.heap_max_in_bytes',           global_tags, {value: k["mem"]["heap_max_in_bytes"]}, 'ms', timestamp
+      client.add_metric metric_base + '.jvm.memory.non_heap_committed_in_bytes', global_tags, {value: k["mem"]["non_heap_committed_in_bytes"]}, 'ms', timestamp
+      client.add_metric metric_base + '.jvm.memory.non_heap_used_in_bytes',      global_tags, {value: k["mem"]["non_heap_used_in_bytes"]}, 'ms', timestamp
+      k["mem"]["pools"]["young"].each do |l, v|
+        client.add_metric metric_base + '.jvm.memory.pools', global_tags.merge({ type: l, pool: "young" }), {value: v}, 'ms', timestamp
+      end
+      k["mem"]["pools"]["survivor"].each do |l, v|
+        client.add_metric metric_base + '.jvm.memory.pools', global_tags.merge({ type: l, pool: "survivor" }), {value: v}, 'ms', timestamp
+      end
+      k["mem"]["pools"]["old"].each do |l, v|
+        client.add_metric metric_base + '.jvm.memory.pools', global_tags.merge({ type: l, pool: "old" }), {value: v}, 'ms', timestamp
+      end
+      client.add_metric metric_base + '.jvm.threads.count', global_tags, {value: k["threads"]["count"], peak: k["threads"]["peak_count"]}, 'ms', timestamp
+    end
+    JMESPath.search('nodes.*.thread_pool', node_local_stats)[0].each do |k|
+      client.add_metric metric_base + '.thread_pool.' + k[0], global_tags, k[1], 'ms', global_timestamp
+    end
+    JMESPath.search('nodes.*.network.tcp', node_local_stats)[0].each do |k|
+      client.add_metric metric_base + '.network.tcp.' + k[0], global_tags, {value: k[1]}, 'ms', global_timestamp
+    end
+    JMESPath.search('nodes.*.fs', node_local_stats).each do |k|
+      timestamp = k["timestamp"]
+      k["total"].each do |u|
+        client.add_metric metric_base + '.fs.total.' + u[0], global_tags, {value: u[1]}, 'ms', timestamp
+      end
+    end
+    JMESPath.search('nodes.*.transport', node_local_stats)[0].each do |k|
+      client.add_metric metric_base + '.transport.' + k[0], global_tags, {value: k[1]}, 'ms', global_timestamp
+    end
+    JMESPath.search('nodes.*.http', node_local_stats)[0].each do |k|
+      client.add_metric metric_base + '.http.' + k[0], global_tags, {value: k[1]}, 'ms', global_timestamp
+    end
+    JMESPath.search('nodes.*.breakers', node_local_stats).each do |k|
+      timestamp = k["timestamp"]
+      k["request"].each do |u|
+        client.add_metric metric_base + '.breakers.request.' + u[0], global_tags, {value: u[1]}, 'ms', timestamp
+      end
+      k["fielddata"].each do |u|
+        client.add_metric metric_base + '.breakers.fielddata.' + u[0], global_tags, {value: u[1]}, 'ms', timestamp
+      end
+      k["parent"].each do |u|
+        client.add_metric metric_base + '.breakers.parent.' + u[0], global_tags, {value: u[1]}, 'ms', timestamp
+      end
+    end
+    client.write
+  end
+end
+
+cli.execute(ARGV)
+
